@@ -1,18 +1,27 @@
-// Dashboard.js - Part 1: Imports and Initial Setup
-import React, { useState, useCallback, useEffect } from "react";
+// Dashboard.js
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import DocumentViewer from "./DocumentViewer";
+import { useDataFetching } from "../hooks/useDataFetching";
 
 function Dashboard() {
-  // ----------------
-  // State Management
-  // ----------------
-  const [documents, setDocuments] = useState({ shared: [], uploaded: [] });
+  const navigate = useNavigate();
+  const user = JSON.parse(localStorage.getItem("user"));
+
+  // Use the custom hook
+  const {
+    documents,
+    users,
+    loading: dataLoading,
+    error: dataError,
+    fetchData,
+  } = useDataFetching(user);
+
+  // Local state for UI
   const [title, setTitle] = useState("");
   const [file, setFile] = useState(null);
   const [newVersionFile, setNewVersionFile] = useState(null);
-  const [users, setUsers] = useState([]);
   const [selectedUsers, setSelectedUsers] = useState([]);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isVersionModalOpen, setIsVersionModalOpen] = useState(false);
@@ -20,85 +29,21 @@ function Dashboard() {
   const [error, setError] = useState(null);
   const [selectedDocument, setSelectedDocument] = useState(null);
   const [documentToUpdate, setDocumentToUpdate] = useState(null);
-
-  const navigate = useNavigate();
-  const user = JSON.parse(localStorage.getItem("user"));
-
-  // ----------------
-  // Data Fetching
-  // ----------------
-  const fetchDocuments = useCallback(async () => {
-    try {
-      // Fetch documents shared with the user
-      const { data: sharedDocs, error: sharedError } = await supabase
-        .from("documents")
-        .select(
-          `
-          *,
-          shared_documents!inner(*),
-          comments(*),
-          users!documents_uploaded_by_fkey(username),
-          uploaded_by_user:users!documents_uploaded_by_fkey(username)
-        `,
-        )
-        .eq("shared_documents.shared_with_user_id", user?.user_id);
-
-      if (sharedError) throw sharedError;
-
-      // Fetch documents uploaded by the user
-      const { data: uploadedDocs, error: uploadedError } = await supabase
-        .from("documents")
-        .select(
-          `
-          *,
-          shared_documents(
-            *,
-            users!shared_documents_shared_with_user_id_fkey(username)
-          ),
-          comments(*),
-          users!documents_uploaded_by_fkey(username)
-        `,
-        )
-        .eq("uploaded_by", user?.user_id);
-
-      if (uploadedError) throw uploadedError;
-
-      setDocuments({
-        shared: sharedDocs || [],
-        uploaded: uploadedDocs || [],
-      });
-    } catch (error) {
-      console.error("Error fetching documents:", error);
-      setError("Failed to fetch documents");
-    }
-  }, [user?.user_id]);
-
-  const fetchUsers = useCallback(async () => {
-    try {
-      const { data, error } = await supabase
-        .from("users")
-        .select("*")
-        .neq("user_id", user?.user_id);
-
-      if (error) throw error;
-      setUsers(data || []);
-    } catch (error) {
-      console.error("Error fetching users:", error);
-      setError("Failed to fetch users");
-    }
-  }, [user?.user_id]);
-
   useEffect(() => {
     if (!user) {
       navigate("/login");
       return;
     }
-    fetchDocuments();
-    fetchUsers();
-  }, [navigate, user, fetchDocuments, fetchUsers]);
-  // ----------------
-  // Document Handling Functions
-  // ----------------
+
+    fetchData();
+
+    const refreshInterval = setInterval(() => {
+      fetchData(true);
+    }, 30000); // Refresh every 30 seconds
+
+    return () => clearInterval(refreshInterval);
+  }, [user, navigate, fetchData]);
+
   const handleUpload = async (e) => {
     e.preventDefault();
     if (!file || !title || selectedUsers.length === 0) {
@@ -177,7 +122,7 @@ function Dashboard() {
       setFile(null);
       setSelectedUsers([]);
       setIsUploadModalOpen(false);
-      fetchDocuments();
+      fetchData();
     } catch (error) {
       console.error("Error details:", error);
       setError(error.message || "Error uploading document");
@@ -186,14 +131,10 @@ function Dashboard() {
     }
   };
 
-  // ----------------
-  // Version Control Functions
-  // ----------------
   const handleUploadNewVersion = (document) => {
     setDocumentToUpdate(document);
     setIsVersionModalOpen(true);
   };
-
   const handleVersionSubmit = async (e) => {
     e.preventDefault();
 
@@ -210,7 +151,6 @@ function Dashboard() {
       const fileExt = newVersionFile.name.split(".").pop();
       const fileName = `${Date.now()}_v${newVersion}.${fileExt}`;
 
-      // Upload new file
       const { error: storageError } = await supabase.storage
         .from("documents")
         .upload(fileName, newVersionFile);
@@ -264,7 +204,7 @@ function Dashboard() {
       setNewVersionFile(null);
       setIsVersionModalOpen(false);
       setDocumentToUpdate(null);
-      fetchDocuments();
+      fetchData();
     } catch (error) {
       console.error("Error updating version:", error);
       setError(error.message || "Error updating document version");
@@ -273,9 +213,6 @@ function Dashboard() {
     }
   };
 
-  // ----------------
-  // Delete Functions
-  // ----------------
   const handleDeleteDocument = async (documentId) => {
     const confirmDelete = window.confirm(
       "Are you sure you want to delete this document? This action cannot be undone.",
@@ -334,7 +271,7 @@ function Dashboard() {
 
       if (docError) throw docError;
 
-      fetchDocuments();
+      fetchData();
     } catch (error) {
       console.error("Error deleting document:", error);
       setError("Failed to delete document");
@@ -345,16 +282,13 @@ function Dashboard() {
     localStorage.removeItem("user");
     navigate("/login");
   };
-  // ----------------
   // Render Functions
-  // ----------------
   const renderDocumentCard = (doc, isUploaded = false) => (
     <div
       key={doc.document_id}
       className="bg-white overflow-hidden shadow-sm rounded-lg hover:shadow-md transition-shadow duration-200"
     >
       <div className="px-4 py-5 sm:p-6">
-        {/* Card Header */}
         <div className="flex justify-between items-start mb-2">
           <div>
             <h3 className="text-lg font-medium text-gray-900">{doc.title}</h3>
@@ -364,7 +298,6 @@ function Dashboard() {
               </p>
             )}
           </div>
-          {/* Action Buttons for Uploaded Documents */}
           {isUploaded && (
             <div className="flex space-x-2">
               <button
@@ -409,7 +342,6 @@ function Dashboard() {
           )}
         </div>
 
-        {/* Version and Status */}
         <div className="mt-2">
           <span className="text-sm text-gray-500">
             Version: {doc.current_version || 1}
@@ -427,7 +359,6 @@ function Dashboard() {
           </span>
         </div>
 
-        {/* Shared Users List */}
         {isUploaded && (
           <div className="mt-4">
             <h4 className="text-sm font-medium text-gray-500">Shared with:</h4>
@@ -455,7 +386,6 @@ function Dashboard() {
           </div>
         )}
 
-        {/* View Button */}
         <div className="mt-4">
           <button
             onClick={() => setSelectedDocument(doc)}
@@ -468,12 +398,9 @@ function Dashboard() {
     </div>
   );
 
-  // ----------------
   // Main Render
-  // ----------------
   return (
     <div className="min-h-screen bg-gray-100">
-      {/* Header */}
       <nav className="bg-white shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
@@ -495,12 +422,10 @@ function Dashboard() {
         </div>
       </nav>
 
-      {/* Main Content */}
       <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        {/* Error Display */}
-        {error && (
+        {(error || dataError) && (
           <div className="mb-4 bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded relative">
-            {error}
+            {error || dataError}
             <button
               onClick={() => setError(null)}
               className="absolute top-0 right-0 p-3"
@@ -516,7 +441,7 @@ function Dashboard() {
             </button>
           </div>
         )}
-        {/* Upload Button */}
+
         <div className="mb-6">
           <button
             onClick={() => setIsUploadModalOpen(true)}
@@ -539,26 +464,32 @@ function Dashboard() {
           </button>
         </div>
 
-        {/* Documents Sections */}
-        <div className="mb-8">
-          <h2 className="text-lg font-medium text-gray-900 mb-4">
-            Documents You've Shared
-          </h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {documents.uploaded.map((doc) => renderDocumentCard(doc, true))}
+        {dataLoading ? (
+          <div className="flex justify-center items-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="mb-8">
+              <h2 className="text-lg font-medium text-gray-900 mb-4">
+                Documents You've Shared
+              </h2>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {documents.uploaded.map((doc) => renderDocumentCard(doc, true))}
+              </div>
+            </div>
 
-        <div>
-          <h2 className="text-lg font-medium text-gray-900 mb-4">
-            Documents Shared with You
-          </h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {documents.shared.map((doc) => renderDocumentCard(doc))}
-          </div>
-        </div>
+            <div>
+              <h2 className="text-lg font-medium text-gray-900 mb-4">
+                Documents Shared with You
+              </h2>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {documents.shared.map((doc) => renderDocumentCard(doc))}
+              </div>
+            </div>
+          </>
+        )}
       </div>
-
       {/* Upload Modal */}
       {isUploadModalOpen && (
         <div className="fixed z-10 inset-0 overflow-y-auto">
