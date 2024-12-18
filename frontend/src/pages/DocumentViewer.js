@@ -34,9 +34,8 @@ function DocumentViewer({
   const [documentStatus, setDocumentStatus] = useState(null);
   const [confirmReason, setConfirmReason] = useState("");
   const [error, setError] = useState(null);
-  const [currentVersion, setCurrentVersion] = useState(1);
   const [availableVersions, setAvailableVersions] = useState([]);
-  const [selectedVersion, setSelectedVersion] = useState(currentVersion);
+  const [selectedVersion, setSelectedVersion] = useState(null);
   const [documentUrl, setDocumentUrl] = useState(selectedDocument?.file_url);
 
   // Document Uploader Check
@@ -45,55 +44,44 @@ function DocumentViewer({
   // ----------------
   // Data Fetching
   // ----------------
-  const fetchData = useCallback(async () => {
-    try {
-      // Fetch comments for current version
-      const { data: commentsData, error: commentsError } = await supabase
-        .from("comments")
-        .select(
-          `
-            *,
-            users!comments_commented_by_fkey(username)
-          `,
-        )
-        .eq("document_id", documentId)
-        .eq("version", selectedVersion);
+  // First, modify the fetchData and fetchVersions functions to include selectedVersion
+  const fetchData = useCallback(
+    async (version) => {
+      try {
+        console.log("Fetching data for version:", version); // Use selectedVersion here
 
-      if (commentsError) throw commentsError;
+        // Fetch shared document status
+        const { data: sharedDocs, error: sharedDocError } = await supabase
+          .from("shared_documents")
+          .select("*")
+          .eq("document_id", documentId)
+          .eq("shared_with_user_id", currentUser.user_id);
 
-      // Fetch shared document status
-      const { data: sharedDocs, error: sharedDocError } = await supabase
-        .from("shared_documents")
-        .select("*")
-        .eq("document_id", documentId)
-        .eq("shared_with_user_id", currentUser.user_id);
+        if (sharedDocError) throw sharedDocError;
 
-      if (sharedDocError) throw sharedDocError;
+        // Fetch approval history
+        const { data: historyData, error: historyError } = await supabase
+          .from("document_history")
+          .select(
+            `
+              *,
+              user:users!document_history_action_by_fkey(username)
+            `,
+          )
+          .eq("document_id", documentId)
+          .order("action_date", { ascending: true });
 
-      // Fetch approval history
-      const { data: historyData, error: historyError } = await supabase
-        .from("document_history")
-        .select(
-          `
-            *,
-            user:users!document_history_action_by_fkey(username)
-          `,
-        )
-        .eq("document_id", documentId)
-        .order("action_date", { ascending: true });
+        if (historyError) throw historyError;
 
-      if (historyError) throw historyError;
-
-      setComments(commentsData || []);
-      setApprovalHistory(historyData || []);
-      setDocumentStatus(sharedDocs?.[0]?.approval_status || "pending");
-      setCurrentVersion(sharedDocs?.[0]?.current_version || 1);
-    } catch (error) {
-      console.error("Error fetching data:", error);
-      setError("Failed to load document data");
-    }
-  }, [documentId, currentUser.user_id, selectedVersion]);
-
+        setApprovalHistory(historyData || []);
+        setDocumentStatus(sharedDocs?.[0]?.approval_status || "pending");
+      } catch (error) {
+        console.error("Error fetching data:", error);
+        setError("Failed to load document data");
+      }
+    },
+    [documentId, currentUser.user_id],
+  );
   // ----------------
   // Version Handling
   // ----------------
@@ -154,22 +142,54 @@ function DocumentViewer({
     }
   }, [documentId, selectedDocument]);
 
-  const handleVersionChange = (newVersion) => {
-    const version = availableVersions.find(
-      (v) => v.version === parseInt(newVersion),
-    );
+  const handleVersionChange = async (newVersion) => {
+    const versionNumber = parseInt(newVersion);
+    const version = availableVersions.find((v) => v.version === versionNumber);
+
+    console.log("Changing to version:", versionNumber);
+    console.log("Selected version:", version);
+
     if (version) {
-      setSelectedVersion(parseInt(newVersion));
+      setSelectedVersion(versionNumber);
       setDocumentUrl(version.file_url);
-      fetchData();
+
+      try {
+        // Fetch comments for selected version
+        const { data: commentsData, error: commentsError } = await supabase
+          .from("comments")
+          .select(
+            `
+            *,
+            users!comments_commented_by_fkey(username)
+          `,
+          )
+          .eq("document_id", documentId)
+          .eq("version", versionNumber);
+
+        if (commentsError) throw commentsError;
+        setComments(commentsData || []);
+
+        // Fetch other data
+        await fetchData(versionNumber);
+      } catch (error) {
+        console.error("Error fetching version data:", error);
+        setError("Failed to load version data");
+      }
     }
   };
 
   // Initial data load
   useEffect(() => {
-    fetchData();
-    fetchVersions();
-  }, [fetchData, fetchVersions]);
+    if (selectedDocument) {
+      const currentVersion = selectedDocument.current_version || 1;
+      console.log("Initial version set to:", currentVersion);
+
+      setSelectedVersion(currentVersion);
+      setDocumentUrl(selectedDocument.file_url);
+      fetchVersions();
+      fetchData(currentVersion);
+    }
+  }, [selectedDocument, fetchData, fetchVersions]);
 
   // ----------------
   // Approval Handling
@@ -423,7 +443,7 @@ function DocumentViewer({
           {/* Version Selector */}
           <div className="version-controls">
             <select
-              value={selectedVersion}
+              value={selectedVersion || ""}
               onChange={(e) => handleVersionChange(e.target.value)}
               className="version-selector"
             >
@@ -523,102 +543,99 @@ function DocumentViewer({
           </Document>
         </div>
       </div>
-
       {/* Sidebar */}
-      <div className="document-sidebar">
-        <ApprovalHistory history={approvalHistory} />
+            <div className="document-sidebar">
+              <ApprovalHistory history={approvalHistory} />
 
-        <div className="comments-section">
-          <div className="comments-header">
-            <h3>Comments (Version {selectedVersion})</h3>
-            <button onClick={downloadCommentsCSV} className="download-button">
-              Download CSV
-            </button>
-          </div>
-
-          {showCommentForm && (
-            <form onSubmit={handleAddComment} className="comment-form">
-              <textarea
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                placeholder="Add a comment..."
-                disabled={loading}
-              />
-              <div className="form-actions">
-                <button
-                  type="button"
-                  onClick={() => setShowCommentForm(false)}
-                  className="cancel-button"
-                  disabled={loading}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="submit-button"
-                  disabled={loading}
-                >
-                  {loading ? "Adding..." : "Add Comment"}
-                </button>
-              </div>
-            </form>
-          )}
-
-          <div className="comments-list">
-            {comments.map((comment) => (
-              <div key={comment.comment_id} className="comment-card">
-                <div className="comment-header">
-                  <span className="username">{comment.users?.username}</span>
-                  <span className="page-number">
-                    Page {comment.page_number}
-                  </span>
+              <div className="comments-section">
+                <div className="comments-header">
+                  <h3>Comments (Version {selectedVersion})</h3>
+                  <button onClick={downloadCommentsCSV} className="download-button">
+                    Download CSV
+                  </button>
                 </div>
-                <div className="comment-content">{comment.comment_text}</div>
-                <div className="comment-footer">
-                  {new Date(comment.created_at).toLocaleString()}
+
+                {showCommentForm && (
+                  <form onSubmit={handleAddComment} className="comment-form">
+                    <textarea
+                      value={comment}
+                      onChange={(e) => setComment(e.target.value)}
+                      placeholder="Add a comment..."
+                      disabled={loading}
+                    />
+                    <div className="form-actions">
+                      <button
+                        type="button"
+                        onClick={() => setShowCommentForm(false)}
+                        className="cancel-button"
+                        disabled={loading}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="submit-button"
+                        disabled={loading}
+                      >
+                        {loading ? "Adding..." : "Add Comment"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <div className="comments-list">
+                  {comments.map((comment) => (
+                    <div key={comment.comment_id} className="comment-card">
+                      <div className="comment-header">
+                        <span className="username">{comment.users?.username}</span>
+                        <span className="page-number">Page {comment.page_number}</span>
+                      </div>
+                      <div className="comment-content">{comment.comment_text}</div>
+                      <div className="comment-footer">
+                        {new Date(comment.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Confirmation Dialog */}
-      {showConfirmDialog && (
-        <ConfirmationDialog
-          isOpen={true}
-          onClose={() => setShowConfirmDialog(null)}
-          onConfirm={() => handleApprovalAction(showConfirmDialog)}
-          title={`Confirm ${
-            showConfirmDialog.charAt(0).toUpperCase() +
-            showConfirmDialog.slice(1)
-          }`}
-          confirmColor={
-            showConfirmDialog === "approve"
-              ? "green"
-              : showConfirmDialog === "reject"
-                ? "red"
-                : "yellow"
-          }
-          message={
-            <div className="confirmation-content">
-              <p>
-                {showConfirmDialog === "revert"
-                  ? "Are you sure you want to revert your decision?"
-                  : `Are you sure you want to ${showConfirmDialog} this document?`}
-              </p>
-              <textarea
-                value={confirmReason}
-                onChange={(e) => setConfirmReason(e.target.value)}
-                placeholder="Add a reason (optional)"
-                className="reason-input"
-              />
             </div>
-          }
-        />
-      )}
-    </div>
-  );
-}
 
-export default DocumentViewer;
+            {/* Confirmation Dialog */}
+            {showConfirmDialog && (
+              <ConfirmationDialog
+                isOpen={true}
+                onClose={() => setShowConfirmDialog(null)}
+                onConfirm={() => handleApprovalAction(showConfirmDialog)}
+                title={`Confirm ${
+                  showConfirmDialog.charAt(0).toUpperCase() +
+                  showConfirmDialog.slice(1)
+                }`}
+                confirmColor={
+                  showConfirmDialog === "approve"
+                    ? "green"
+                    : showConfirmDialog === "reject"
+                    ? "red"
+                    : "yellow"
+                }
+                message={
+                  <div className="confirmation-content">
+                    <p>
+                      {showConfirmDialog === "revert"
+                        ? "Are you sure you want to revert your decision?"
+                        : `Are you sure you want to ${showConfirmDialog} this document?`}
+                    </p>
+                    <textarea
+                      value={confirmReason}
+                      onChange={(e) => setConfirmReason(e.target.value)}
+                      placeholder="Add a reason (optional)"
+                      className="reason-input"
+                    />
+                  </div>
+                }
+              />
+            )}
+          </div>
+        );
+      }
+
+      export default DocumentViewer;
